@@ -1,0 +1,36 @@
+# Core FastAPI and Web Framework
+fastapi[standard]==0.115.5
+uvicorn[standard]==0.32.1
+
+# Pydantic for data validation and settings
+pydantic>=2.10.3
+pydantic-settings>=2.7.0
+
+# AI/ML Dependencies
+openai>=1.57.0
+
+# HTTP Client and Networking
+httpx>=0.28.1
+requests>=2.32.3
+
+# Environment and Configuration
+python-dotenv>=1.0.1
+
+# Development and Testing
+pytest>=8.3.4
+pytest-asyncio>=0.25.0
+pytest-httpx>=0.31.2
+
+# Rate Limiting and Throttling
+asyncio-throttle>=1.0.2
+aiofiles>=24.1.0
+
+# Logging and Monitoring
+structlog>=24.4.0
+
+# Optional: Data Processing
+pandas>=2.2.3
+numpy>=2.2.1
+
+# Optional: Additional FastAPI Extensions
+slowapi>=0.1.9
