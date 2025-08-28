@@ -18,7 +18,7 @@ import html
 import logging
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime, timezone
-from app.core.exceptions import TikTokDataCollectionError
+from app.core.exceptions import TikTokDataCollectionError, TikTokValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +54,10 @@ class TikTokDataCleaner:
         Raises:
             TikTokDataCollectionError: If response structure is invalid
         """
+        # Basic input validation
+        if not api_response:
+            raise TikTokValidationError("API response cannot be empty", field="api_response")
+        
         logger.info("Cleaning hashtag challenge feed response")
         
         try:
@@ -78,6 +82,11 @@ class TikTokDataCleaner:
                     message="Invalid aweme_list format - not a list",
                     api_endpoint="hashtag_feed"
                 )
+            
+            # Safety check for reasonable data size
+            if len(aweme_list) > 1000:
+                logger.warning(f"Large aweme_list size: {len(aweme_list)} videos - this may take time to process")
+                aweme_list = aweme_list[:1000]  # Limit to prevent memory issues
             
             # Clean each video
             cleaned_videos = []
@@ -128,6 +137,11 @@ class TikTokDataCleaner:
         Returns:
             Cleaned video dictionary or None if invalid
         """
+        # Basic input validation
+        if not video_raw or not isinstance(video_raw, dict):
+            logger.debug("Invalid video data - not a dictionary")
+            return None
+        
         try:
             # Extract required fields
             aweme_id = video_raw.get("aweme_id")
@@ -157,15 +171,16 @@ class TikTokDataCleaner:
                 "signature": self.clean_text(author_raw.get("signature", ""), 200)
             }
             
-            # Extract statistics
+            # Extract statistics with safe conversion
             stats_raw = video_raw.get("statistics", {})
-            statistics = {
-                "digg_count": int(stats_raw.get("digg_count", 0)),
-                "comment_count": int(stats_raw.get("comment_count", 0)),
-                "play_count": int(stats_raw.get("play_count", 0)),
-                "share_count": int(stats_raw.get("share_count", 0)),
-                "collect_count": int(stats_raw.get("collect_count", 0))
-            }
+            statistics = {}
+            for stat_name in ["digg_count", "comment_count", "play_count", "share_count", "collect_count"]:
+                try:
+                    value = stats_raw.get(stat_name, 0)
+                    statistics[stat_name] = max(0, int(value))  # Ensure non-negative
+                except (ValueError, TypeError):
+                    statistics[stat_name] = 0
+                    logger.debug(f"Invalid {stat_name} value for video {aweme_id}: {value}")
             
             # Extract share URL
             share_url = video_raw.get("share_url", "")
@@ -225,6 +240,13 @@ class TikTokDataCleaner:
         Returns:
             Tuple of (cleaned_comments_list, metadata)
         """
+        # Basic input validation
+        if not api_response:
+            raise TikTokValidationError("API response cannot be empty", field="api_response")
+        
+        if not video_id or not isinstance(video_id, str):
+            raise TikTokValidationError("Video ID must be a non-empty string", field="video_id")
+        
         logger.info(f"Cleaning comments response for video {video_id}")
         
         try:
@@ -241,6 +263,11 @@ class TikTokDataCleaner:
             if not isinstance(comments_raw, list):
                 logger.warning(f"Invalid comments format for video {video_id}")
                 return [], {"error": "invalid_format"}
+            
+            # Safety check for reasonable data size
+            if len(comments_raw) > 5000:
+                logger.warning(f"Large comments list size: {len(comments_raw)} comments - limiting to 5000")
+                comments_raw = comments_raw[:5000]  # Prevent memory issues
             
             # Clean each comment
             cleaned_comments = []
@@ -294,6 +321,11 @@ class TikTokDataCleaner:
         Returns:
             Cleaned comment dictionary or None if invalid
         """
+        # Basic input validation
+        if not comment_raw or not isinstance(comment_raw, dict):
+            logger.debug("Invalid comment data - not a dictionary")
+            return None
+        
         try:
             # Extract required fields
             cid = comment_raw.get("cid")
@@ -324,8 +356,11 @@ class TikTokDataCleaner:
             except (ValueError, OSError):
                 create_date = datetime.now(timezone.utc).isoformat()
             
-            # Extract engagement metrics
-            digg_count = int(comment_raw.get("digg_count", 0))
+            # Extract engagement metrics with safe conversion
+            try:
+                digg_count = max(0, int(comment_raw.get("digg_count", 0)))
+            except (ValueError, TypeError):
+                digg_count = 0
             
             # Extract threading information
             reply_id = comment_raw.get("reply_id", "0")
@@ -365,8 +400,13 @@ class TikTokDataCleaner:
         Returns:
             Cleaned text string
         """
-        if not isinstance(text, str):
+        if not text or not isinstance(text, str):
             return ""
+        
+        # Safety check for extremely long text
+        if len(text) > 50000:  # 50KB limit
+            logger.warning(f"Extremely long text detected ({len(text)} chars) - truncating")
+            text = text[:50000]
         
         # Decode HTML entities
         text = html.unescape(text)
@@ -414,6 +454,10 @@ class TikTokDataCleaner:
         Returns:
             Validation report dictionary
         """
+        # Basic input validation
+        if not isinstance(cleaned_videos, list):
+            raise TikTokValidationError("Cleaned videos must be a list", field="cleaned_videos")
+        
         logger.info(f"Validating {len(cleaned_videos)} cleaned videos")
         
         validation_report = {

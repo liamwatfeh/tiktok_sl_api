@@ -1,0 +1,4 @@
+---
+alwaysApply: true
+description: Always scan **NEW** code generated using Semgrep for security vulnerabilities
+---

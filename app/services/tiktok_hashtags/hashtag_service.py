@@ -14,6 +14,7 @@ This service implements the 4-stage pipeline:
 
 import logging
 import time
+import asyncio
 from typing import Dict, Optional
 from datetime import datetime, timezone
 
@@ -21,7 +22,8 @@ from app.core.config import settings
 from app.core.exceptions import (
     TikTokDataCollectionError, 
     TikTokAnalysisError,
-    ValidationError
+    TikTokValidationError,
+    ConfigurationError
 )
 from app.models.tiktok_schemas import TikTokHashtagAnalysisRequest
 from app.services.tiktok_shared.tiktok_api_client import TikTokAPIClient
@@ -43,16 +45,26 @@ class TikTokHashtagService:
     
     def __init__(self):
         """Initialize the hashtag service with all required components."""
+        # Validate critical configuration
+        if not settings.TIKTOK_RAPIDAPI_KEY:
+            raise ConfigurationError("TikTok API key not configured", config_key="TIKTOK_RAPIDAPI_KEY")
+        if not settings.OPENAI_API_KEY:
+            raise ConfigurationError("OpenAI API key not configured", config_key="OPENAI_API_KEY")
+        
         # Initialize shared components
-        self.api_client = TikTokAPIClient(settings.TIKTOK_RAPIDAPI_KEY)
-        self.data_cleaner = TikTokDataCleaner()
-        self.comment_collector = TikTokCommentCollector(self.api_client)
-        self.ai_analyzer = TikTokAIAnalyzer()
-        self.response_builder = TikTokResponseBuilder()
+        try:
+            self.api_client = TikTokAPIClient(settings.TIKTOK_RAPIDAPI_KEY)
+            self.data_cleaner = TikTokDataCleaner()
+            self.comment_collector = TikTokCommentCollector(self.api_client)
+            self.ai_analyzer = TikTokAIAnalyzer()
+            self.response_builder = TikTokResponseBuilder()
+        except Exception as e:
+            logger.error(f"Failed to initialize service components: {e}")
+            raise ConfigurationError(f"Service initialization failed: {e}")
         
         logger.info("TikTok Hashtag Service initialized with all components")
     
-    def analyze_hashtag(self, request: TikTokHashtagAnalysisRequest) -> Dict:
+    async def analyze_hashtag(self, request: TikTokHashtagAnalysisRequest) -> Dict:
         """
         Perform complete hashtag analysis.
         
@@ -62,20 +74,29 @@ class TikTokHashtagService:
         Returns:
             Complete analysis response dictionary
         """
-        logger.info(f"Starting hashtag analysis for: #{request.hashtag}")
+        # Basic security validation for internal use
+        if not request.hashtag or len(request.hashtag.strip()) == 0:
+            raise TikTokValidationError("Hashtag cannot be empty", field="hashtag")
+        
+        # Remove # symbol if present and sanitize
+        clean_hashtag = request.hashtag.strip().lstrip('#')
+        if not clean_hashtag.replace('_', '').isalnum():
+            raise TikTokValidationError("Hashtag contains invalid characters", field="hashtag", value=request.hashtag)
+        
+        logger.info(f"Starting hashtag analysis for: #{clean_hashtag}")
         pipeline_start_time = time.time()
         
         try:
             # Stage 1: Data Collection - Get hashtag videos
             logger.info("Stage 1: Collecting hashtag videos")
             videos_raw, videos_metadata = self._collect_hashtag_videos(
-                hashtag=request.hashtag,
-                posts_count=request.posts_count
+                hashtag=clean_hashtag,
+                posts_count=request.max_posts
             )
             
             if not videos_raw:
                 return self.response_builder.build_error_response(
-                    f"No videos found for hashtag: {request.hashtag}",
+                    f"No videos found for hashtag: {clean_hashtag}",
                     error_code="NO_VIDEOS_FOUND"
                 )
             
@@ -151,13 +172,24 @@ class TikTokHashtagService:
             
             logger.info(f"Stage 3b complete: {total_cleaned_comments} comments cleaned")
             
-            # Stage 3c: AI Analysis (Video-Centric)
+            # Stage 3c: AI Analysis (Video-Centric with Concurrency)
             logger.info("Stage 3c: AI analysis of comments")
-            analyzed_comments, analysis_metadata = self.ai_analyzer.analyze_videos_with_comments(
-                videos_with_comments=videos_with_comments,
-                ai_analysis_prompt=request.ai_analysis_prompt,
-                max_quote_length=request.max_quote_length
-            )
+            
+            # Use concurrent processing for multiple videos, sequential for single video
+            if len(videos_with_comments) > 1:
+                logger.info(f"Using concurrent processing for {len(videos_with_comments)} videos")
+                analyzed_comments, analysis_metadata = await self.ai_analyzer.analyze_videos_with_comments_concurrent(
+                    videos_with_comments=videos_with_comments,
+                    ai_analysis_prompt=request.ai_analysis_prompt,
+                    max_quote_length=request.max_quote_length
+                )
+            else:
+                logger.info("Using sequential processing for single video")
+                analyzed_comments, analysis_metadata = self.ai_analyzer.analyze_videos_with_comments(
+                    videos_with_comments=videos_with_comments,
+                    ai_analysis_prompt=request.ai_analysis_prompt,
+                    max_quote_length=request.max_quote_length
+                )
             
             if not analyzed_comments:
                 return self.response_builder.build_error_response(
@@ -187,32 +219,46 @@ class TikTokHashtagService:
             
             final_response = self.response_builder.build_analysis_response(
                 analyzed_comments=analyzed_comments,
-                hashtag=request.hashtag,
+                hashtag=clean_hashtag,
                 videos_metadata=unified_videos_metadata,
                 comments_metadata=comments_metadata,
                 analysis_metadata=analysis_metadata,
                 processing_metadata=processing_metadata
             )
             
-            logger.info(f"Hashtag analysis complete for #{request.hashtag} in {total_pipeline_time:.2f}s")
+            logger.info(f"Hashtag analysis complete for #{clean_hashtag} in {total_pipeline_time:.2f}s")
             return final_response
             
+        except TikTokValidationError as e:
+            logger.warning(f"Validation error for hashtag analysis: {e.message}")
+            return self.response_builder.build_error_response(
+                f"Invalid request: {e.message}",
+                error_code="VALIDATION_ERROR"
+            )
+            
         except TikTokDataCollectionError as e:
-            logger.error(f"Data collection error: {e}")
+            logger.error(f"Data collection error: {e.message}")
             return self.response_builder.build_error_response(
                 f"Failed to collect hashtag data: {e.message}",
                 error_code="DATA_COLLECTION_ERROR"
             )
             
         except TikTokAnalysisError as e:
-            logger.error(f"AI analysis error: {e}")
+            logger.error(f"AI analysis error: {e.message}")
             return self.response_builder.build_error_response(
                 f"Failed to analyze comments: {e.message}",
                 error_code="ANALYSIS_ERROR"
             )
             
+        except ConfigurationError as e:
+            logger.error(f"Configuration error: {e.message}")
+            return self.response_builder.build_error_response(
+                "Service configuration error",
+                error_code="CONFIGURATION_ERROR"
+            )
+            
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected error in hashtag analysis: {str(e)}")
             return self.response_builder.build_error_response(
                 "An unexpected error occurred during analysis",
                 error_code="INTERNAL_ERROR"
@@ -306,13 +352,20 @@ class TikTokHashtagService:
     
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit - close API client."""
-        if self.api_client:
-            self.api_client.close()
+        try:
+            if hasattr(self, 'api_client') and self.api_client:
+                self.api_client.close()
+        except Exception as e:
+            logger.warning(f"Error closing API client: {e}")
+        
+        if exc_type:
+            logger.error(f"Service exited with exception: {exc_type.__name__}: {exc_val}")
+        
         logger.info("TikTok Hashtag Service closed")
 
 
 # Convenience function for external usage
-def analyze_hashtag(request: TikTokHashtagAnalysisRequest) -> Dict:
+async def analyze_hashtag(request: TikTokHashtagAnalysisRequest) -> Dict:
     """
     Convenience function to analyze a hashtag.
     
@@ -323,4 +376,4 @@ def analyze_hashtag(request: TikTokHashtagAnalysisRequest) -> Dict:
         Complete analysis response dictionary
     """
     with TikTokHashtagService() as service:
-        return service.analyze_hashtag(request)
+        return await service.analyze_hashtag(request)

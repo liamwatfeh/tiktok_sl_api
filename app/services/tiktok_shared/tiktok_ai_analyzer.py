@@ -48,13 +48,16 @@ class TikTokAIAnalyzer:
         """
         self.api_key = openai_api_key or settings.OPENAI_API_KEY
         self.model = model or settings.DEFAULT_MODEL
-        self.max_concurrent = settings.MAX_CONCURRENT_AGENTS
-        self.request_delay = 0.1  # 100ms between requests
+        self.max_concurrent = getattr(settings, 'MAX_CONCURRENT_AGENTS', 3)  # Default to 3 concurrent
+        self.request_delay = 0.2  # 200ms between requests for rate limiting
         
         # Initialize OpenAI client
         self.client = OpenAI(api_key=self.api_key)
         
-        logger.info(f"TikTok AI Analyzer initialized with model: {self.model}")
+        # Create semaphore for concurrent processing
+        self.semaphore = asyncio.Semaphore(self.max_concurrent)
+        
+        logger.info(f"TikTok AI Analyzer initialized with model: {self.model}, max_concurrent: {self.max_concurrent}")
     
     def analyze_videos_with_comments(
         self,
@@ -142,6 +145,139 @@ class TikTokAIAnalyzer:
                 model_used=self.model,
                 analysis_step="video_processing"
             )
+
+    async def analyze_videos_with_comments_concurrent(
+        self,
+        videos_with_comments: List[Dict],
+        ai_analysis_prompt: str,
+        max_quote_length: int = 200
+    ) -> Tuple[List[Dict], Dict]:
+        """
+        Analyze multiple videos with their comments using concurrent processing.
+        Each video + its comments processed in parallel with rate limiting.
+        
+        Args:
+            videos_with_comments: List of {video_data, comments} dictionaries
+            ai_analysis_prompt: User-provided analysis criteria
+            max_quote_length: Maximum length for extracted quotes
+            
+        Returns:
+            Tuple of (analyzed_comments_list, analysis_metadata)
+        """
+        logger.info(f"Starting concurrent video-centric analysis of {len(videos_with_comments)} videos with {self.max_concurrent} agents")
+        start_time = time.time()
+        
+        try:
+            if not videos_with_comments:
+                logger.warning("No videos provided for analysis")
+                return [], {"error": "no_videos"}
+
+            # Process videos concurrently using asyncio.gather
+            tasks = []
+            for i, video_data in enumerate(videos_with_comments):
+                task = self._analyze_video_with_comments_async(
+                    video_data.get('video_data', {}),
+                    video_data.get('comments', []),
+                    ai_analysis_prompt,
+                    max_quote_length,
+                    video_index=i
+                )
+                tasks.append(task)
+            
+            # Wait for all tasks to complete
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            # Process results and separate successful from failed
+            analyzed_comments = []
+            successful_analyses = 0
+            failed_analyses = 0
+            total_api_calls = 0
+            
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    logger.error(f"Video {i+1} failed: {result}")
+                    failed_analyses += len(videos_with_comments[i].get('comments', []))
+                else:
+                    analyzed_comments.extend(result)
+                    successful_analyses += len(result)
+                    total_api_calls += 1
+            
+            # Create analysis metadata
+            end_time = time.time()
+            processing_time = end_time - start_time
+            total_comments = sum(len(v.get('comments', [])) for v in videos_with_comments)
+            
+            metadata = {
+                "total_videos": len(videos_with_comments),
+                "total_comments": total_comments,
+                "successful_analyses": successful_analyses,
+                "failed_analyses": failed_analyses,
+                "total_api_calls": total_api_calls,
+                "processing_time_seconds": round(processing_time, 2),
+                "analysis_timestamp": datetime.now(timezone.utc).isoformat(),
+                "model_used": self.model,
+                "ai_analysis_prompt": ai_analysis_prompt,
+                "max_quote_length": max_quote_length,
+                "concurrent_agents": self.max_concurrent
+            }
+            
+            logger.info(f"Concurrent video-centric analysis complete: {successful_analyses}/{total_comments} comments analyzed from {len(videos_with_comments)} videos in {processing_time:.2f}s")
+            
+            return analyzed_comments, metadata
+            
+        except Exception as e:
+            logger.error(f"Unexpected error in concurrent video analysis processing: {e}")
+            raise TikTokAnalysisError(
+                message="Failed to complete concurrent video-centric comment analysis",
+                model_used=self.model,
+                analysis_step="concurrent_video_processing"
+            )
+
+    async def _analyze_video_with_comments_async(
+        self,
+        video_data: Dict,
+        comments: List[Dict],
+        ai_analysis_prompt: str,
+        max_quote_length: int = 200,
+        video_index: int = 0
+    ) -> List[Dict]:
+        """
+        Async version of _analyze_video_with_comments with rate limiting.
+        
+        Args:
+            video_data: Video metadata and content
+            comments: List of comment dictionaries for this video
+            ai_analysis_prompt: User-provided analysis criteria
+            max_quote_length: Maximum length for extracted quotes
+            video_index: Index of this video for logging
+            
+        Returns:
+            List of analyzed comment/video content dictionaries
+        """
+        async with self.semaphore:  # Rate limiting with semaphore
+            try:
+                # Add staggered delay to prevent overwhelming OpenAI API
+                await asyncio.sleep(self.request_delay * (video_index % self.max_concurrent))
+                
+                # Run the synchronous OpenAI call in a thread pool
+                loop = asyncio.get_event_loop()
+                from concurrent.futures import ThreadPoolExecutor
+                with ThreadPoolExecutor() as executor:
+                    result = await loop.run_in_executor(
+                        executor,
+                        self._analyze_video_with_comments,
+                        video_data,
+                        comments,
+                        ai_analysis_prompt,
+                        max_quote_length
+                    )
+                
+                logger.debug(f"Video {video_index + 1} analysis completed: {len(result)} analyses")
+                return result
+                
+            except Exception as e:
+                logger.error(f"Failed to analyze video {video_index + 1} concurrently: {e}")
+                raise
     
     def analyze_comments_batch(
         self, 

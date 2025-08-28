@@ -1,11 +1,18 @@
 import time
 import logging
-from fastapi import FastAPI, HTTPException, Depends, status
+import secrets
+from contextlib import asynccontextmanager
+from typing import Dict, Any
+from fastapi import FastAPI, HTTPException, Depends, status, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
-from app.core.exceptions import TikTokAPIException
+from app.core.exceptions import TikTokAPIException, AuthenticationError
 from app.models.tiktok_schemas import TikTokHashtagAnalysisRequest, TikTokUnifiedAnalysisResponse
 from app.services.tiktok_hashtags.hashtag_service import TikTokHashtagService
 
@@ -13,12 +20,15 @@ from app.services.tiktok_hashtags.hashtag_service import TikTokHashtagService
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
 logger = logging.getLogger(__name__)
 
+# Rate limiting
+limiter = Limiter(key_func=get_remote_address)
+
 # Security
 security = HTTPBearer()
 
 def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)):
     """
-    Verify API key authentication.
+    Verify API key authentication using timing-safe comparison.
     
     Args:
         credentials: HTTP Bearer token from request header
@@ -27,61 +37,109 @@ def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)
         Verified credentials
         
     Raises:
-        HTTPException: If authentication fails
+        AuthenticationError: If authentication fails
     """
-    if credentials.credentials != settings.SERVICE_API_KEY:
-        logger.warning(f"Invalid API key attempt: {credentials.credentials[:10]}...")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid API key",
-            headers={"WWW-Authenticate": "Bearer"},
+    # Use timing-safe comparison to prevent timing attacks
+    if not secrets.compare_digest(credentials.credentials, settings.SERVICE_API_KEY):
+        logger.warning("Invalid API key attempt from authenticated request")
+        raise AuthenticationError(
+            "Invalid API key",
+            auth_type="Bearer"
         )
     return credentials
+
+# Lifespan context manager
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager."""
+    # Startup
+    logger.info(f"Starting {settings.API_TITLE} v{settings.API_VERSION}")
+    logger.info(f"Environment: {settings.ENVIRONMENT}")
+    logger.info(f"Log level: {settings.LOG_LEVEL}")
+    
+    # Validate critical configuration
+    if not settings.TIKTOK_RAPIDAPI_KEY:
+        logger.critical("TikTok API key not configured")
+    if not settings.OPENAI_API_KEY:
+        logger.critical("OpenAI API key not configured")
+    if not settings.SERVICE_API_KEY:
+        logger.critical("Service API key not configured")
+    
+    logger.info("Application startup complete")
+    
+    yield
+    
+    # Shutdown
+    logger.info(f"Shutting down {settings.API_TITLE}")
+    logger.info("Application shutdown complete")
 
 # Initialize FastAPI app
 app = FastAPI(
     title=settings.API_TITLE,
     version=settings.API_VERSION,
     description=settings.API_DESCRIPTION,
-    docs_url="/docs",
-    redoc_url="/redoc"
+    docs_url="/docs" if settings.ENVIRONMENT == "development" else None,
+    redoc_url="/redoc" if settings.ENVIRONMENT == "development" else None,
+    lifespan=lifespan
 )
 
-# Add CORS middleware
+# Security middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["localhost", "127.0.0.1", "*.your-domain.com"] if settings.ENVIRONMENT == "production" else ["*"]
+)
+
+# CORS middleware with environment-specific configuration
+if settings.ENVIRONMENT == "development":
+    # Development: Allow localhost origins
+    allowed_origins = [
+        "http://localhost:3000",
+        "http://localhost:8080", 
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:8080"
+    ]
+else:
+    # Production: Specific domains only
+    allowed_origins = [
+        "https://your-frontend-domain.com",
+        "https://app.your-domain.com"
+    ]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Configure appropriately for production
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],
+    allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining"]
 )
+
+# Rate limiting
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # Health check endpoint
 @app.get("/health", summary="Health Check")
-async def health_check():
+@limiter.limit("60/minute")
+async def health_check(request: Request) -> Dict[str, Any]:
     """
-    Health check endpoint to verify API status and configuration.
+    Health check endpoint to verify API status.
     
     Returns:
-        Health status with configuration details
+        Basic health status without sensitive configuration details
     """
     return {
         "status": "healthy",
         "api_name": settings.API_TITLE,
         "version": settings.API_VERSION,
         "timestamp": time.time(),
-        "configuration": {
-            "tiktok_api_configured": bool(settings.TIKTOK_RAPIDAPI_KEY),
-            "openai_configured": bool(settings.OPENAI_API_KEY),
-            "service_auth_configured": bool(settings.SERVICE_API_KEY),
-            "max_posts_per_request": settings.MAX_POSTS_PER_REQUEST,
-            "log_level": settings.LOG_LEVEL
-        }
+        "environment": settings.ENVIRONMENT
     }
 
 # Root endpoint
 @app.get("/", summary="API Information")
-async def root():
+@limiter.limit("30/minute")
+async def root(request: Request) -> Dict[str, Any]:
     """
     Root endpoint providing API information and available endpoints.
     
@@ -110,7 +168,7 @@ async def root():
 
 @app.post(
     "/analyze-tiktok-hashtags",
-    response_model=dict,
+    response_model=TikTokUnifiedAnalysisResponse,
     summary="Analyze TikTok Hashtag",
     description="Analyze TikTok comments for a specific hashtag using AI-powered sentiment and theme analysis",
     responses={
@@ -141,13 +199,19 @@ async def root():
         },
         400: {"description": "Invalid request parameters"},
         401: {"description": "Invalid API key"},
-        500: {"description": "Internal server error"}
+        422: {"description": "Request validation error"},
+        429: {"description": "Rate limit exceeded"},
+        500: {"description": "Internal server error"},
+        502: {"description": "External service error"},
+        503: {"description": "Service temporarily unavailable"}
     }
 )
+@limiter.limit("10/minute")
 async def analyze_tiktok_hashtag(
-    request: TikTokHashtagAnalysisRequest,
+    request: Request,
+    request_data: TikTokHashtagAnalysisRequest,
     credentials: HTTPAuthorizationCredentials = Depends(verify_api_key)
-):
+) -> TikTokUnifiedAnalysisResponse:
     """
     Analyze TikTok hashtag for sentiment, themes, and purchase intent.
     
@@ -163,26 +227,42 @@ async def analyze_tiktok_hashtag(
     
     **Processing Time**: Typically 10-30 seconds depending on comment volume
     """
-    logger.info(f"Hashtag analysis request received for: #{request.hashtag}")
-    logger.info(f"Analysis prompt: {request.ai_analysis_prompt[:50]}...")
+    # Log request without sensitive details
+    logger.info(f"Hashtag analysis request received for: #{request_data.hashtag}")
+    logger.info(f"Requested posts: {request_data.max_posts}, Model: {request_data.model}")
     
     try:
         # Initialize hashtag service and perform analysis
         with TikTokHashtagService() as service:
-            result = service.analyze_hashtag(request)
+            result = await service.analyze_hashtag(request_data)
         
         # Check if result contains an error
         if "error" in result:
-            logger.error(f"Analysis failed: {result['error']['message']}")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=result["error"]
-            )
+            error_details = result["error"]
+            logger.error(f"Analysis failed: {error_details.get('message', 'Unknown error')}")
+            
+            # Map error codes to appropriate HTTP status codes
+            error_code = error_details.get('error_code', 'UNKNOWN_ERROR')
+            if error_code in ['VALIDATION_ERROR', 'INVALID_HASHTAG']:
+                status_code = status.HTTP_400_BAD_REQUEST
+            elif error_code in ['AUTHENTICATION_ERROR']:
+                status_code = status.HTTP_401_UNAUTHORIZED
+            elif error_code in ['RATE_LIMIT_EXCEEDED']:
+                status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            elif error_code in ['DATA_COLLECTION_ERROR', 'EXTERNAL_SERVICE_ERROR']:
+                status_code = status.HTTP_502_BAD_GATEWAY
+            elif error_code in ['ANALYSIS_ERROR']:
+                status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            else:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            
+            raise HTTPException(status_code=status_code, detail=error_details)
         
         # Log successful completion
         metadata = result.get("metadata", {})
-        logger.info(f"Analysis complete for #{request.hashtag}")
-        logger.info(f"Results: {metadata.get('relevant_comments_extracted', 0)} comments analyzed in {metadata.get('processing_time_seconds', 0)}s")
+        logger.info(f"Analysis complete for #{request_data.hashtag}")
+        logger.info(f"Results: {metadata.get('relevant_comments_extracted', 0)} comments analyzed in {metadata.get('processing_time_seconds', 0):.2f}s")
+        logger.info(f"API calls used: {metadata.get('total_api_calls', 0)}")
         
         return result
         
@@ -190,24 +270,43 @@ async def analyze_tiktok_hashtag(
         # Re-raise HTTP exceptions (like validation errors)
         raise
         
-    except TikTokAPIException as e:
-        logger.error(f"TikTok API error: {e}")
+    except AuthenticationError as e:
+        logger.warning(f"Authentication error: {e}")
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "message": "TikTok analysis service error",
-                "error_code": e.error_code,
-                "details": e.to_dict()
-            }
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.to_dict()
+        )
+        
+    except TikTokAPIException as e:
+        logger.error(f"TikTok API error: {e.error_code} - {e.message}")
+        
+        # Map exception types to HTTP status codes
+        status_code_map = {
+            "RATE_LIMIT_EXCEEDED": status.HTTP_429_TOO_MANY_REQUESTS,
+            "TIKTOK_DATA_COLLECTION": status.HTTP_502_BAD_GATEWAY,
+            "TIKTOK_ANALYSIS": status.HTTP_503_SERVICE_UNAVAILABLE,
+            "TIKTOK_TIMEOUT": status.HTTP_504_GATEWAY_TIMEOUT,
+            "CONFIGURATION": status.HTTP_500_INTERNAL_SERVER_ERROR,
+            "EXTERNAL_SERVICE": status.HTTP_502_BAD_GATEWAY,
+            "DATA_PROCESSING": status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "RESOURCE_EXHAUSTED": status.HTTP_507_INSUFFICIENT_STORAGE
+        }
+        
+        http_status = status_code_map.get(e.error_code, status.HTTP_500_INTERNAL_SERVER_ERROR)
+        
+        raise HTTPException(
+            status_code=http_status,
+            detail=e.to_dict()
         )
         
     except Exception as e:
-        logger.error(f"Unexpected error in hashtag analysis: {e}")
+        logger.error(f"Unexpected error in hashtag analysis: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={
+                "error": "INTERNAL_SERVER_ERROR",
                 "message": "An unexpected error occurred during analysis",
-                "error_code": "INTERNAL_SERVER_ERROR"
+                "timestamp": time.time()
             }
         )
 
@@ -215,34 +314,44 @@ async def analyze_tiktok_hashtag(
 # - /analyze-tiktok-accounts (Phase 2)
 # - /analyze-tiktok-search (Phase 3)
 
-# Startup event handler
-@app.on_event("startup")
-async def startup_event():
-    """
-    Application startup handler.
-    Logs startup information and validates configuration.
-    """
-    logger.info(f"Starting {settings.API_TITLE} v{settings.API_VERSION}")
-    logger.info(f"Log level: {settings.LOG_LEVEL}")
-    logger.info(f"TikTok API configured: {bool(settings.TIKTOK_RAPIDAPI_KEY)}")
-    logger.info(f"OpenAI configured: {bool(settings.OPENAI_API_KEY)}")
-    logger.info(f"Service auth configured: {bool(settings.SERVICE_API_KEY)}")
-
-# Shutdown event handler
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    Application shutdown handler.
-    Logs shutdown information and cleanup.
-    """
-    logger.info(f"Shutting down {settings.API_TITLE}")
+# Security headers middleware
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    """Add security headers to all responses."""
+    response = await call_next(request)
+    
+    # Security headers
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-XSS-Protection"] = "1; mode=block"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"] = "geolocation=(), microphone=(), camera=()"
+    
+    # Only add HSTS in production with HTTPS
+    if settings.ENVIRONMENT == "production":
+        response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    
+    return response
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0", 
-        port=8000, 
-        reload=True,
-        log_level=settings.LOG_LEVEL.lower()
-    )
+    
+    # Development vs Production configuration
+    if settings.ENVIRONMENT == "development":
+        uvicorn.run(
+            "app.main:app",
+            host="127.0.0.1",  # More secure for development
+            port=8000, 
+            reload=True,
+            log_level=settings.LOG_LEVEL.lower()
+        )
+    else:
+        # Production configuration
+        uvicorn.run(
+            "app.main:app",
+            host="0.0.0.0",
+            port=8000,
+            reload=False,
+            log_level=settings.LOG_LEVEL.lower(),
+            access_log=True
+        )

@@ -17,6 +17,7 @@ import logging
 from typing import Dict, List, Optional
 from app.services.tiktok_shared.tiktok_api_client import TikTokAPIClient
 from app.core.config import settings
+from app.core.exceptions import TikTokValidationError, TikTokDataCollectionError
 
 logger = logging.getLogger(__name__)
 
@@ -27,8 +28,10 @@ class TikTokCommentCollector:
     """
     
     def __init__(self, api_client: TikTokAPIClient):
+        if not api_client:
+            raise TikTokValidationError("API client is required", field="api_client")
+        
         self.api_client = api_client
-        self.request_delay = settings.TIKTOK_REQUEST_DELAY
         logger.info("TikTok Comment Collector initialized")
     
     def collect_video_comments(self, aweme_id: str, max_comments: int = 100) -> List[Dict]:
@@ -42,7 +45,18 @@ class TikTokCommentCollector:
         Returns:
             List of comment dictionaries
         """
-        logger.info(f"Collecting comments for video {aweme_id}, max: {max_comments}")
+        # Basic input validation
+        if not aweme_id or len(aweme_id.strip()) == 0:
+            raise TikTokValidationError("Video ID cannot be empty", field="aweme_id")
+        
+        clean_aweme_id = aweme_id.strip()
+        if not clean_aweme_id.isdigit():
+            raise TikTokValidationError("Video ID must be numeric", field="aweme_id", value=aweme_id)
+        
+        if max_comments < 1 or max_comments > 200:
+            raise TikTokValidationError("Max comments must be between 1 and 200", field="max_comments", value=max_comments)
+        
+        logger.info(f"Collecting comments for video {clean_aweme_id}, max: {max_comments}")
         
         all_comments = []
         cursor = None
@@ -50,11 +64,8 @@ class TikTokCommentCollector:
         
         while len(all_comments) < max_comments:
             try:
-                # Rate limiting between calls
-                if calls_made > 0:
-                    time.sleep(self.request_delay)
-                
-                response = self.api_client.get_video_comments(aweme_id, cursor)
+                # API client handles rate limiting automatically
+                response = self.api_client.get_video_comments(clean_aweme_id, cursor)
                 calls_made += 1
                 
                 # Extract comments from response
@@ -62,7 +73,7 @@ class TikTokCommentCollector:
                 comments = comments_data.get("comments", [])
                 
                 if not comments:
-                    logger.info(f"No more comments found for video {aweme_id}")
+                    logger.info(f"No more comments found for video {clean_aweme_id}")
                     break
                 
                 # Add comments to collection (respect max limit)
@@ -76,16 +87,19 @@ class TikTokCommentCollector:
                 cursor = comments_data.get("cursor")
                 
                 if not has_more or not cursor:
-                    logger.info(f"Reached end of comments for video {aweme_id}")
+                    logger.info(f"Reached end of comments for video {clean_aweme_id}")
                     break
                 
-                logger.debug(f"Collected {len(all_comments)} comments so far for video {aweme_id}")
+                logger.debug(f"Collected {len(all_comments)} comments so far for video {clean_aweme_id}")
                 
+            except TikTokDataCollectionError as e:
+                logger.error(f"TikTok API error collecting comments for video {clean_aweme_id}: {e.message}")
+                break
             except Exception as e:
-                logger.error(f"Error collecting comments for video {aweme_id}: {e}")
+                logger.error(f"Unexpected error collecting comments for video {clean_aweme_id}: {str(e)}")
                 break
         
-        logger.info(f"Finished collecting {len(all_comments)} comments for video {aweme_id}")
+        logger.info(f"Finished collecting {len(all_comments)} comments for video {clean_aweme_id}")
         return all_comments
     
     def collect_all_comments(self, videos: List[Dict], max_comments_per_video: int = 100) -> Dict:
@@ -99,6 +113,29 @@ class TikTokCommentCollector:
         Returns:
             Dictionary with comments_by_video mapping and metadata
         """
+        # Basic input validation
+        if not videos:
+            logger.warning("No videos provided for comment collection")
+            return {
+                "comments_by_video": {},
+                "metadata": {
+                    "videos_processed": 0,
+                    "successful_videos": 0,
+                    "total_comments_collected": 0,
+                    "comments_api_calls": 0
+                }
+            }
+        
+        if not isinstance(videos, list):
+            raise TikTokValidationError("Videos must be a list", field="videos")
+        
+        if max_comments_per_video < 1 or max_comments_per_video > 200:
+            raise TikTokValidationError("Max comments per video must be between 1 and 200", field="max_comments_per_video", value=max_comments_per_video)
+        
+        # Safety limit for batch processing
+        if len(videos) > 100:
+            logger.warning(f"Large batch of {len(videos)} videos - this may take a while")
+        
         logger.info(f"Collecting comments for {len(videos)} videos")
         
         comments_by_video = {}
@@ -122,8 +159,14 @@ class TikTokCommentCollector:
                 estimated_calls = max(1, len(comments) // 50)  # ~50 comments per call
                 total_api_calls += estimated_calls
                 
+            except TikTokValidationError as e:
+                logger.warning(f"Invalid video ID {aweme_id}: {e.message}")
+                comments_by_video[aweme_id] = []
+            except TikTokDataCollectionError as e:
+                logger.error(f"Failed to collect comments for video {aweme_id}: {e.message}")
+                comments_by_video[aweme_id] = []
             except Exception as e:
-                logger.error(f"Failed to collect comments for video {aweme_id}: {e}")
+                logger.error(f"Unexpected error collecting comments for video {aweme_id}: {str(e)}")
                 comments_by_video[aweme_id] = []
         
         total_comments = sum(len(comments) for comments in comments_by_video.values())

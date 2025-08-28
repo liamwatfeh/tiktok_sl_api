@@ -25,7 +25,7 @@ class TikTokHashtagAnalysisRequest(BaseModel):
         description="Hashtag to search (without # symbol)",
         example="bmwmotorrad"
     )
-    posts_count: int = Field(
+    max_posts: int = Field(
         default=20, 
         ge=1, 
         le=50,
