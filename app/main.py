@@ -13,8 +13,13 @@ from slowapi.errors import RateLimitExceeded
 
 from app.core.config import settings
 from app.core.exceptions import TikTokAPIException, AuthenticationError
-from app.models.tiktok_schemas import TikTokHashtagAnalysisRequest, TikTokUnifiedAnalysisResponse
+from app.models.tiktok_schemas import (
+    TikTokHashtagAnalysisRequest, 
+    TikTokAccountAnalysisRequest,
+    TikTokUnifiedAnalysisResponse
+)
 from app.services.tiktok_hashtags.hashtag_service import TikTokHashtagService
+from app.services.tiktok_accounts.account_service import TikTokAccountService
 
 # Configure logging
 logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL))
@@ -310,8 +315,149 @@ async def analyze_tiktok_hashtag(
             }
         )
 
+@app.post(
+    "/analyze-tiktok-accounts",
+    response_model=TikTokUnifiedAnalysisResponse,
+    summary="Analyze TikTok Account",
+    description="Analyze TikTok comments from a specific account's posts using AI-powered sentiment and theme analysis",
+    responses={
+        200: {
+            "description": "Successful analysis",
+            "content": {
+                "application/json": {
+                    "example": {
+                        "comment_analyses": [
+                            {
+                                "quote": "Love this BMW! Great quality and performance",
+                                "sentiment": "positive",
+                                "theme": "product quality",
+                                "purchase_intent": "medium",
+                                "confidence_score": 0.88
+                            }
+                        ],
+                        "metadata": {
+                            "hashtag_analyzed": "bmw",
+                            "total_videos_analyzed": 5,
+                            "relevant_comments_extracted": 12,
+                            "processing_time_seconds": 8.3,
+                            "model_used": "gpt-4.1-2025-04-14"
+                        }
+                    }
+                }
+            }
+        },
+        400: {"description": "Invalid request parameters"},
+        401: {"description": "Invalid API key"},
+        422: {"description": "Request validation error"},
+        429: {"description": "Rate limit exceeded"},
+        500: {"description": "Internal server error"},
+        502: {"description": "External service error"},
+        503: {"description": "Service temporarily unavailable"}
+    }
+)
+@limiter.limit("5/minute")
+async def analyze_tiktok_account(
+    request: Request,
+    request_data: TikTokAccountAnalysisRequest,
+    credentials: HTTPAuthorizationCredentials = Depends(verify_api_key)
+) -> TikTokUnifiedAnalysisResponse:
+    """
+    Analyze TikTok account posts and comments for sentiment, themes, and purchase intent.
+    
+    This endpoint performs a complete analysis pipeline:
+    1. Collects TikTok videos from the specified account
+    2. Extracts and cleans comments from those videos
+    3. Analyzes comments using AI for sentiment, themes, and purchase intent
+    4. Returns structured analysis results with comprehensive metadata
+    
+    **Authentication**: Requires Bearer token in Authorization header
+    
+    **Rate Limits**: Subject to TikTok API and OpenAI rate limits
+    
+    **Processing Time**: Typically 10-30 seconds depending on comment volume
+    """
+    # Log request without sensitive details
+    logger.info(f"Account analysis request received for: @{request_data.username}")
+    logger.info(f"Requested posts: {request_data.max_posts}, Comments per post: {request_data.max_comments_per_post}, Model: {request_data.model}")
+    
+    try:
+        # Initialize account service and perform analysis
+        with TikTokAccountService() as service:
+            result = await service.analyze_account(request_data)
+        
+        # Check if result contains an error
+        if "error" in result:
+            error_details = result["error"]
+            logger.error(f"Analysis failed: {error_details.get('message', 'Unknown error')}")
+            
+            # Map error codes to appropriate HTTP status codes
+            error_code = error_details.get('error_code', 'UNKNOWN_ERROR')
+            if error_code in ['VALIDATION_ERROR', 'INVALID_USERNAME']:
+                status_code = status.HTTP_400_BAD_REQUEST
+            elif error_code in ['AUTHENTICATION_ERROR']:
+                status_code = status.HTTP_401_UNAUTHORIZED
+            elif error_code in ['RATE_LIMIT_EXCEEDED']:
+                status_code = status.HTTP_429_TOO_MANY_REQUESTS
+            elif error_code in ['DATA_COLLECTION_ERROR', 'EXTERNAL_SERVICE_ERROR']:
+                status_code = status.HTTP_502_BAD_GATEWAY
+            elif error_code in ['ANALYSIS_ERROR']:
+                status_code = status.HTTP_503_SERVICE_UNAVAILABLE
+            else:
+                status_code = status.HTTP_500_INTERNAL_SERVER_ERROR
+            
+            raise HTTPException(status_code=status_code, detail=error_details)
+        
+        # Log successful completion
+        metadata = result.get("metadata", {})
+        logger.info(f"Analysis complete for @{request_data.username}")
+        logger.info(f"Results: {metadata.get('relevant_comments_extracted', 0)} comments analyzed in {metadata.get('processing_time_seconds', 0):.2f}s")
+        logger.info(f"API calls used: {metadata.get('total_api_calls', 0)}")
+        
+        return result
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions (like validation errors)
+        raise
+        
+    except AuthenticationError as e:
+        logger.warning(f"Authentication error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=e.to_dict()
+        )
+        
+    except TikTokAPIException as e:
+        logger.error(f"TikTok API error: {e.error_code} - {e.message}")
+        
+        # Map TikTok exception types to HTTP status codes
+        if hasattr(e, 'http_status') and e.http_status:
+            http_status = e.http_status
+        elif e.error_code in ['VALIDATION_ERROR', 'INVALID_PARAMETERS']:
+            http_status = status.HTTP_400_BAD_REQUEST
+        elif e.error_code in ['RATE_LIMIT_EXCEEDED']:
+            http_status = status.HTTP_429_TOO_MANY_REQUESTS
+        elif e.error_code in ['DATA_COLLECTION_ERROR']:
+            http_status = status.HTTP_502_BAD_GATEWAY
+        else:
+            http_status = status.HTTP_500_INTERNAL_SERVER_ERROR
+        
+        raise HTTPException(
+            status_code=http_status,
+            detail=e.to_dict()
+        )
+        
+    except Exception as e:
+        logger.error(f"Unexpected error in account analysis: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={
+                "error": "INTERNAL_SERVER_ERROR",
+                "message": "An unexpected error occurred during analysis",
+                "timestamp": time.time()
+            }
+        )
+
 # TODO: Add additional endpoints in future phases
-# - /analyze-tiktok-accounts (Phase 2)
 # - /analyze-tiktok-search (Phase 3)
 
 # Security headers middleware

@@ -196,7 +196,7 @@ class TikTokAPIClient:
     
     def user_posts(self, username: str, count: int = 50, cursor: Optional[str] = None) -> Dict:
         """
-        Get posts from a user account (for future account monitoring endpoint).
+        Get posts from a user account feed using User Feed endpoint.
         
         Args:
             username: TikTok username
@@ -204,7 +204,7 @@ class TikTokAPIClient:
             cursor: Pagination cursor
             
         Returns:
-            TikTok API response with user posts
+            TikTok API response with user feed videos (same format as hashtag endpoint)
         """
         # Basic input validation
         if not username or len(username.strip()) == 0:
@@ -217,17 +217,21 @@ class TikTokAPIClient:
         if count < 1 or count > 100:
             raise TikTokValidationError("Count must be between 1 and 100", field="count", value=count)
         
-        endpoint = "/user/posts"
+        # Check if we should use mock data
+        if settings.USE_MOCK_DATA:
+            logger.info(f"Using MOCK data for user posts: {clean_username}")
+            return self._get_mock_user_posts(clean_username, count)
+        
+        endpoint = f"/user/{clean_username}/feed"
         url = f"{self.base_url}{endpoint}"
         
-        params = {
-            "username": clean_username,
-            "count": count
-        }
+        params = {}
+        if count != 50:  # Only add count if different from default
+            params["count"] = count
         if cursor:
             params["cursor"] = cursor
         
-        logger.info(f"Calling User Posts API for: {clean_username}")
+        logger.info(f"Calling User Feed API for: {clean_username}")
         
         try:
             self._rate_limit_delay()
@@ -309,6 +313,64 @@ class TikTokAPIClient:
                 "comments": mock_comments,
                 "has_more": False,
                 "cursor": "mock_comment_cursor"
+            }
+        }
+    
+    def _get_mock_user_posts(self, username: str, count: int) -> Dict:
+        """Generate mock user posts data for testing (same format as account API)."""
+        import time
+        
+        mock_videos = []
+        for i in range(count):
+            video_id = f"753031742141294517{i}"  # Realistic TikTok video ID format
+            mock_videos.append({
+                "aweme_id": video_id,
+                "desc": f"Amazing content from @{username}! This is post #{i+1} #trending #content",
+                "create_time": int(time.time()) - (i * 3600 * 24),  # One day apart
+                "author": {
+                    "uid": "681196071625020314",  # Realistic UID format
+                    "nickname": username,
+                    "unique_id": username,
+                    "region": "US",
+                    "avatar_thumb": {
+                        "url_list": ["https://example.com/avatar.jpg"]
+                    },
+                    "follower_count": 5840377,
+                    "following_count": 22,
+                    "aweme_count": 384 + i
+                },
+                "statistics": {
+                    "aweme_id": video_id,
+                    "digg_count": 100018 + (i * 1000),
+                    "comment_count": 4567 + (i * 100),
+                    "play_count": 1454327 + (i * 10000),
+                    "share_count": 3504 + (i * 50),
+                    "collect_count": 6451 + (i * 20),
+                    "download_count": 589 + (i * 10)
+                },
+                "share_url": f"https://www.tiktok.com/@{username}/video/{video_id}",
+                "video": {
+                    "duration": 13768 + (i * 1000),  # ~14 seconds
+                    "ratio": "540p",
+                    "cover": {
+                        "url_list": ["https://example.com/cover.jpg"]
+                    }
+                },
+                "music": {
+                    "id": 7370712348132805000 + i,
+                    "title": f"Trending Song {i+1}",
+                    "author": "Artist Name"
+                }
+            })
+        
+        return {
+            "status": "ok",
+            "data": {
+                "aweme_list": mock_videos,
+                "has_more": len(mock_videos) >= count,
+                "min_cursor": int(time.time() * 1000),
+                "max_cursor": int(time.time() * 1000) - (count * 3600 * 24 * 1000),
+                "cursor": f"mock_user_cursor_{username}"
             }
         }
     

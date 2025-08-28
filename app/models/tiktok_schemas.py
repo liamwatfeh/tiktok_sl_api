@@ -66,6 +66,64 @@ class TikTokHashtagAnalysisRequest(BaseModel):
             }
         }
 
+class TikTokAccountAnalysisRequest(BaseModel):
+    """Request schema for TikTok account analysis (monitor specific accounts)"""
+    
+    # Account parameters  
+    username: str = Field(
+        ..., 
+        min_length=1,
+        max_length=50,
+        description="TikTok username to analyze (without @ symbol)",
+        example="bmw"
+    )
+    max_posts: int = Field(
+        default=20, 
+        ge=1, 
+        le=100,
+        description="Maximum number of posts to analyze from this account"
+    )
+    max_comments_per_post: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Maximum comments per post to analyze"
+    )
+    
+    # AI Analysis parameters
+    ai_analysis_prompt: str = Field(
+        default="Analyze user discussions and comments for sentiment, themes, and purchase intent related to the brand and products featured in this account's content.",
+        min_length=10,
+        max_length=1000,
+        description="Custom AI analysis criteria for content evaluation"
+    )
+    
+    # Model configuration
+    model: str = Field(
+        default="gpt-4.1-2025-04-14",
+        description="AI model to use for analysis"
+    )
+    
+    # Output configuration
+    max_quote_length: int = Field(
+        default=200,
+        ge=50,
+        le=500,
+        description="Maximum length of extracted quotes"
+    )
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "username": "bmw",
+                "max_posts": 10,
+                "max_comments_per_post": 50,
+                "ai_analysis_prompt": "Analyze user discussions about BMW vehicles, focusing on customer sentiment, product feedback, and purchase intentions. Identify themes related to BMW brand perception and customer experiences.",
+                "model": "gpt-4.1-2025-04-14",
+                "max_quote_length": 200
+            }
+        }
+
 # =============================================================================
 # RESPONSE SCHEMAS
 # =============================================================================
