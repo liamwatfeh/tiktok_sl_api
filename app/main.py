@@ -104,16 +104,13 @@ if settings.ENVIRONMENT == "development":
         "http://127.0.0.1:8080"
     ]
 else:
-    # Production: Allow Railway domains (update with your actual domain)
-    # You can add your custom domain here once deployed
-    allowed_origins = [
-        "*"  # Temporarily allow all for API testing - restrict after deployment
-    ]
+    # Production: Allow all origins for internal colleague use
+    allowed_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_credentials=True,
+    allow_credentials=False,  # Required when using allow_origins=["*"]
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
     expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining"]
