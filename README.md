@@ -23,6 +23,8 @@ Your API will be live at: `https://your-app.railway.app`
 
 ## 📡 API Endpoints
 
+> **📖 [Complete API Documentation](API_DOCUMENTATION.md)** - Full reference with examples, schemas, and best practices
+
 ### 🏷️ Hashtag Analysis
 **`POST /analyze-tiktok-hashtags`**
 
@@ -35,6 +37,7 @@ curl -X POST "https://your-app.railway.app/analyze-tiktok-hashtags" \
   -d '{
     "hashtag": "bmwmotorrad",
     "max_posts": 20,
+    "max_comments_per_post": 50,
     "ai_analysis_prompt": "Analyze motorcycle discussions for BMW sentiment and purchase intent",
     "model": "gpt-4.1-2025-04-14"
   }'
