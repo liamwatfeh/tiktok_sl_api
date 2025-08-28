@@ -487,16 +487,16 @@ if __name__ == "__main__":
         uvicorn.run(
             "app.main:app",
             host="127.0.0.1",  # More secure for development
-            port=8000, 
+            port=settings.PORT, 
             reload=True,
             log_level=settings.LOG_LEVEL.lower()
         )
     else:
-        # Production configuration
+        # Production configuration (Railway/Docker)
         uvicorn.run(
             "app.main:app",
             host="0.0.0.0",
-            port=8000,
+            port=settings.PORT,
             reload=False,
             log_level=settings.LOG_LEVEL.lower(),
             access_log=True

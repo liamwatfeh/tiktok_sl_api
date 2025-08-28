@@ -152,6 +152,14 @@ class Settings(BaseSettings):
         description="Application environment (development, staging, production)"
     )
     
+    # Server Configuration
+    PORT: int = Field(
+        default=8000,
+        env="PORT",
+        description="Port for the server to listen on (Railway sets this automatically)",
+        ge=1, le=65535
+    )
+    
     # Testing mode
     USE_MOCK_DATA: bool = Field(
         default=False,
