@@ -220,21 +220,32 @@ class TikTokAccountService:
             logger.info(f"Account analysis complete for @{clean_username} in {total_pipeline_time:.2f}s")
             return response
             
-        except TikTokValidationError:
-            # Re-raise validation errors
-            raise
-        except TikTokDataCollectionError:
-            # Re-raise data collection errors  
-            raise
-        except TikTokAnalysisError:
-            # Re-raise analysis errors
-            raise
+        except TikTokValidationError as e:
+            logger.warning(f"Validation error for account analysis: {e.message}")
+            return self.response_builder.build_error_response(
+                f"Invalid request: {e.message}",
+                error_code="VALIDATION_ERROR"
+            )
+            
+        except TikTokDataCollectionError as e:
+            logger.error(f"Data collection error: {e.message}")
+            return self.response_builder.build_error_response(
+                f"Failed to collect account data: {e.message}",
+                error_code="DATA_COLLECTION_ERROR"
+            )
+            
+        except TikTokAnalysisError as e:
+            logger.error(f"AI analysis error: {e.message}")
+            return self.response_builder.build_error_response(
+                f"Failed to analyze comments: {e.message}",
+                error_code="ANALYSIS_ERROR"
+            )
+            
         except Exception as e:
-            logger.error(f"Unexpected error in account analysis: {e}")
-            raise TikTokAnalysisError(
-                message="Unexpected error during account analysis",
-                model="unknown",
-                analysis_type="account_analysis_pipeline"
+            logger.error(f"Unexpected error in account analysis: {str(e)}")
+            return self.response_builder.build_error_response(
+                "An unexpected error occurred during analysis",
+                error_code="INTERNAL_ERROR"
             )
     
     def health_check(self) -> Dict:
