@@ -231,7 +231,7 @@ async def analyze_tiktok_hashtag(
     """
     # Log request without sensitive details
     logger.info(f"Hashtag analysis request received for: #{request_data.hashtag}")
-    logger.info(f"Requested posts: {request_data.max_posts}, Model: {request_data.model}")
+    logger.info(f"Requested posts: {request_data.max_posts}, Comments per post: {request_data.max_comments_per_post}, Model: {request_data.model}")
     
     try:
         # Initialize hashtag service and perform analysis

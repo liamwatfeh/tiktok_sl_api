@@ -31,6 +31,12 @@ class TikTokHashtagAnalysisRequest(BaseModel):
         le=50,
         description="Number of posts to analyze for this hashtag"
     )
+    max_comments_per_post: int = Field(
+        default=50,
+        ge=1,
+        le=200,
+        description="Maximum comments per post to analyze"
+    )
     
     # AI Analysis parameters
     ai_analysis_prompt: str = Field(
@@ -59,7 +65,8 @@ class TikTokHashtagAnalysisRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "hashtag": "bmwmotorrad",
-                "posts_count": 25,
+                "max_posts": 25,
+                "max_comments_per_post": 30,
                 "ai_analysis_prompt": "Analyze motorcycle discussions for sentiment about BMW motorcycles, purchase intent, and user experiences. Focus on comments expressing opinions about BMW bikes, pricing, or buying decisions.",
                 "model": "gpt-4.1-2025-04-14",
                 "max_quote_length": 200
