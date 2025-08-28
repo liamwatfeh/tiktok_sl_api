@@ -1,0 +1,80 @@
+# Virtual Environment (126MB - HUGE!)
+venv/
+env/
+.venv/
+.env/
+
+# Python Cache Files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Development Documentation (164KB)
+z_docs/
+*.md
+!README.md
+!RAILWAY_DEPLOYMENT.md
+
+# Test Files (Not needed in production)
+test_*.py
+tests/
+.pytest_cache/
+.coverage
+
+# Development Tools
+.git/
+.gitignore
+.gitattributes
+
+# IDE and Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS Files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Environment Files (Security)
+.env
+.env.local
+.env.*.local
+
+# Development Dependencies
+requirements-dev.txt
+
+# Logs
+*.log
+logs/
+
+# Temporary Files
+*.tmp
+*.temp
+.tmp/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Jupyter Notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Database files (if any)
+*.db
+*.sqlite3
+
+# Docker files (no need to copy into image)
+Dockerfile*
+docker-compose*.yml
+.dockerignore
