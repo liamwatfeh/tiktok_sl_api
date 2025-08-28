@@ -91,7 +91,7 @@ app = FastAPI(
 # Security middleware
 app.add_middleware(
     TrustedHostMiddleware,
-    allowed_hosts=["localhost", "127.0.0.1", "*.your-domain.com"] if settings.ENVIRONMENT == "production" else ["*"]
+    allowed_hosts=["localhost", "127.0.0.1", "*.railway.app"] if settings.ENVIRONMENT == "production" else ["*"]
 )
 
 # CORS middleware with environment-specific configuration
@@ -104,10 +104,10 @@ if settings.ENVIRONMENT == "development":
         "http://127.0.0.1:8080"
     ]
 else:
-    # Production: Specific domains only
+    # Production: Allow Railway domains (update with your actual domain)
+    # You can add your custom domain here once deployed
     allowed_origins = [
-        "https://your-frontend-domain.com",
-        "https://app.your-domain.com"
+        "*"  # Temporarily allow all for API testing - restrict after deployment
     ]
 
 app.add_middleware(
