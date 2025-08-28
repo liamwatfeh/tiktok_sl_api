@@ -17,9 +17,11 @@ Transform TikTok conversations into actionable business insights using AI-powere
 
 ## 🚀 Live Demo
 
-Deploy to Railway in 60 seconds → [Deploy Now](https://railway.app)
+**🎯 Your API is now live!** 
 
-Your API will be live at: `https://your-app.railway.app`
+**Endpoint**: `https://tiktokslapi-production.up.railway.app`
+
+**Health Check**: [https://tiktokslapi-production.up.railway.app/health](https://tiktokslapi-production.up.railway.app/health)
 
 ## 📡 API Endpoints
 
@@ -31,7 +33,7 @@ Your API will be live at: `https://your-app.railway.app`
 Analyze conversations and sentiment around specific hashtags.
 
 ```bash
-curl -X POST "https://your-app.railway.app/analyze-tiktok-hashtags" \
+curl -X POST "https://tiktokslapi-production.up.railway.app/analyze-tiktok-hashtags" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -49,7 +51,7 @@ curl -X POST "https://your-app.railway.app/analyze-tiktok-hashtags" \
 Monitor engagement and sentiment on brand accounts.
 
 ```bash
-curl -X POST "https://your-app.railway.app/analyze-tiktok-accounts" \
+curl -X POST "https://tiktokslapi-production.up.railway.app/analyze-tiktok-accounts" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

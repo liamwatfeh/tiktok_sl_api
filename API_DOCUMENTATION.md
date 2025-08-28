@@ -4,12 +4,12 @@ A simple, powerful API that analyzes TikTok comments using AI to understand sent
 
 ## 🚀 Quick Start
 
-**Base URL**: `https://your-railway-app.railway.app`  
+**Base URL**: `https://tiktokslapi-production.up.railway.app`  
 **Authentication**: Bearer token required in all requests
 
 ### Example Request
 ```bash
-curl -X POST "https://your-railway-app.railway.app/analyze-tiktok-hashtags" \
+curl -X POST "https://tiktokslapi-production.up.railway.app/analyze-tiktok-hashtags" \
   -H "Authorization: Bearer YOUR_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{

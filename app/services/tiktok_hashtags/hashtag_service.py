@@ -121,7 +121,7 @@ class TikTokHashtagService:
             logger.info("Stage 3a: Collecting comments from videos")
             comments_result = self.comment_collector.collect_all_comments(
                 videos=videos_cleaned,
-                max_comments_per_video=request.max_comments_per_post
+                 max_comments_per_video=request.max_comments_per_post
             )
             
             comments_by_video = comments_result["comments_by_video"]
